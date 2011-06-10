@@ -594,6 +594,13 @@
 			static $cache = array();
 			$includable = array();
 
+			// Help import "included_fields" setting from 1.x.
+			// This can be removed at some point in future.
+			static $breadcrumb = array();
+			static $included_elements = array();
+			static $parent_section = 0;
+			if ($break == false) $parent_section = $this->get('parent_section');
+
 			// Check for recursive subsections
 			if($this->get('subsection_id') != $this->get('parent_section') || $break == false) {
 		
@@ -601,23 +608,101 @@
 				$sectionManager = new SectionManager(Symphony::Engine());
 				$section = $sectionManager->fetch($this->get('subsection_id'));
 				$fields = $section->fetchFields();
-				
+
+				// 1.x stuff
+				$parent = end($breadcrumb);
+				$current = (empty($parent) ? '' : $parent.': ').$this->get('element_name');
+				$breadcrumb[] = $current;
+				$field_id = $this->get('id');
+				if (!isset($cache[$field_id]['included'])) {
+					$included_fields = explode(',', $this->get('included_fields'));
+					foreach ($included_fields as $field) {
+						list($id, $mode) = explode(':', $field);
+						$cache[$field_id]['included'][$id][': '.$mode] = true;
+					}
+				}
+			
 				foreach($fields as $field) {
-					$field_id = $field->get('id');
-					if (!isset($cache[$field_id])) {
-						$cache[$field_id] = array();
-						$elements = $cache[$field_id] = $field->fetchIncludableElements(true);
+					$subfield_id = $field->get('id');
+					if (!isset($cache[$subfield_id]['elements'])) {
+						$cache[$subfield_id]['elements'] = array();
+						$elements = $cache[$subfield_id]['elements'] = $field->fetchIncludableElements(true);
+
+						// 1.x stuff
+						foreach ($elements as $element) {
+							list($name, $mode) = explode(': ', $element);
+							$cache[$subfield_id]['modes'][$element] = ': '.$mode;
+						}
 					}
 					else {
-						$elements = $cache[$field_id];
+						$elements = $cache[$subfield_id]['elements'];
 					}
 					
 					foreach($elements as $element) {
+						// 1.x stuff
+						if (isset($cache[$field_id]['included'][$subfield_id])) {
+							$mode = $cache[$subfield_id]['modes'][$element];
+							if (!empty($cache[$field_id]['included'][$subfield_id][$mode])) {
+								$included_elements[$parent_section][$current.': '.$element] = true;
+							}
+						}
+
 						$includable[] = $this->get('element_name') . ': ' . $element;
 					}
 				}
+
+				// 1.x stuff
+				array_pop($breadcrumb);
 			}
-			
+
+			if ($break == false) {
+				// To prevent registering delegates just for the few versions, we output include_fields for our JS here.
+				static $callback = NULL;
+				if (empty($callback)) $callback = Symphony::Engine()->getPageCallback();
+				if (empty($callback) || $callback['driver'] != 'blueprintsdatasources' || !is_array($callback['context'])) return;
+
+				static $done = array();
+				if (empty($done[$parent_section])) {
+					if (!empty($included_elements[$parent_section])) {
+						// Let our script know sort and order values.
+						Administration::instance()->Page->addElementToHead(
+							new XMLElement(
+								'script',
+								"Symphony.Context.add('ssm_included_fields', " . json_encode(array($parent_section => $included_elements[$parent_section])) . ");",
+								array('type' => 'text/javascript')
+							), 100
+						);
+					}
+					$done[$parent_section] = true;
+					if (empty($done['script'])) {
+						// Let our script know sort and order values.
+						Administration::instance()->Page->addElementToHead(
+							new XMLElement(
+								'script',
+								"
+(function($) {
+	$(document).ready(function(){
+		$('select[name^=\"fields[xml_elements\"]').before('<i id=\"ssm_import_1x\">".__('Import SubsectionManager 1.x field settings')."</i>');
+		$('i#ssm_import_1x').bind('click', function(){
+			var section_id = jQuery('select#context option:selected').val(),
+				fields = Symphony.Context.get('ssm_included_fields');
+
+			$('select[name^=\"fields[xml_elements\"] option').each(function(){
+				if (fields[section_id][$(this).attr('value')]) {
+					$(this).css({'background': 'green', 'font-weight': 'bold'}).attr('selected','selected').prepend('* ');
+				}
+			});
+		});
+	});
+})(jQuery.noConflict());",
+								array('type' => 'text/javascript')
+							), 101
+						);
+					}
+				}
+			}
+
+//var_dump("<br />\n".(microtime(true) - $started));
 			return $includable;
 		}
 		
